@@ -1,13 +1,6 @@
 require 'optparse'
 
-DEFAULT_SORT = "#{Ddr::IndexFields::IDENTIFIER} ASC"
-METS_NAMESPACE = "http://www.loc.gov/METS/"
-METS_SHELL = <<-EOS
-  <mets xmlns="#{METS_NAMESPACE}" xmlns:xlink="http://www.w3.org/1999/xlink">
-    <fileSec />
-    <structMap />
-  </mets>
-EOS
+DEFAULT_SORT = "#{Ddr::IndexFields::IDENTIFIER} ASC, #{Ddr::IndexFields::OBJECT_CREATE_DATE} ASC"
 
 options = { sort: DEFAULT_SORT }
 OptionParser.new do |opts|
@@ -23,91 +16,88 @@ item = Item.find(options[:pid])
 
 comps = item.children(response_format: :solr, sort: options[:sort])
 
-identifiers = {}
-media = {}
-thumbnails = []
+uses = {}
+structure = {}
+content_seq = 0
+thumbnail_seq = 0
+
 comps.each do |c|
   doc = SolrDocument.new(c)
-  identifiers[doc.id] = doc.identifier
-  media[doc.content_type] ||= []
-  media[doc.content_type] << doc.id
-  thumbnails << doc.id if doc.has_thumbnail?
+  if doc.has_content?
+    content_seq += 1
+    use = case doc.content_type
+    when "image/tiff"
+      "image/master"
+    when "application/pdf"
+      "pdf/reference"
+    when "application/octet-stream"
+      "application/reference"
+    end
+    uses[use] ||= []
+    uses[use] << { pid: doc.id, identifier: doc[Ddr::IndexFields::IDENTIFIER] || doc.id, seq: content_seq, datastream: 'content' }
+  end
+  if doc.has_thumbnail?
+    thumbnail_seq += 1
+    use = "image/thumbnail"
+    uses[use] ||= []
+    uses[use] << { pid: doc.id, identifier: doc[Ddr::IndexFields::IDENTIFIER] || doc.id, seq: thumbnail_seq, datastream: 'thumbnail' }
+  end
 end
 
-mets = Nokogiri::XML(METS_SHELL)
+METS_NAMESPACE = "http://www.loc.gov/METS/"
+METS_SHELL = <<-EOS
+  <mets xmlns="#{METS_NAMESPACE}" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <fileSec />
+    <structMap />
+  </mets>
+EOS
 
-# content files
-fileSecNodeSet = mets.xpath("//mets:fileSec", "mets" => METS_NAMESPACE)
-fileSecNode = fileSecNodeSet.first
-media.keys.each do |m|
-  use = case m
-  when "image/tiff"
-    "image/master"
-  when "application/pdf"
-    "pdf/reference"
-  end
+mets = Nokogiri::XML(METS_SHELL) do |config|
+  config.default_xml.noblanks
+end
+
+# fileSec
+fileSecNode = mets.xpath("//mets:fileSec", "mets" => METS_NAMESPACE).first
+uses.keys.each do |use|
   fileGrpNode = Nokogiri::XML::Node.new("fileGrp", mets)
   fileGrpNode['USE'] = use
   fileSecNode.add_child(fileGrpNode)
-  seq = 0
-  media[m].each do |obj_id|
-    seq += 1
+  uses[use].each do |file|
+    # create fileSec nodes
     fileNode = Nokogiri::XML::Node.new("file", mets)
-    fileNode['ID'] = "#{identifiers[obj_id]}-#{use.split('/').last}"
-    fileNode['GROUPID'] = identifiers[obj_id]
-    fileNode['SEQ'] = seq
+    fileNode['ID'] = "#{file[:identifier]}-#{use.split('/').last}"
+    fileNode['GROUPID'] = file[:identifier]
+    fileNode['SEQ'] = file[:seq]
     fileGrpNode.add_child(fileNode)
     fLocatNode = Nokogiri::XML::Node.new("FLocat", mets)
     fLocatNode['LOCTYPE'] = "OTHER"
-    fLocatNode['OTHERLOCTYPE'] = "Fedora3 Datastream"
-    fLocatNode['xlink:href'] = "#{obj_id}/content"
+    fLocatNode['OTHERLOCTYPE'] = "Fedora object datastream"
+    fLocatNode['xlink:href'] = "#{file[:pid]}/#{file[:datastream]}"
     fileNode.add_child(fLocatNode)
+    # collect data for structMap nodes
+    structure[file[:identifier]] ||= []
+    structure[file[:identifier]] << { fileid: fileNode['ID'] }
   end
 end
 
-# thumbnail files
-fileGrpNode = Nokogiri::XML::Node.new("fileGrp", mets)
-fileGrpNode['USE'] = "image/thumbnail"
-fileSecNode.add_child(fileGrpNode)
-seq = 0
-thumbnails.each do |obj_id|
-  seq += 1
-  fileNode = Nokogiri::XML::Node.new("file", mets)
-  fileNode['ID'] = "#{identifiers[obj_id]}-thumbnail"
-  fileNode['GROUPID'] = identifiers[obj_id]
-  fileNode['SEQ'] = seq
-  fileGrpNode.add_child(fileNode)
-  fLocatNode = Nokogiri::XML::Node.new("FLocat", mets)
-  fLocatNode['LOCTYPE'] = "OTHER"
-  fLocatNode['OTHERLOCTYPE'] = "Fedora3 Datastream"
-  fLocatNode['xlink:href'] = "#{obj_id}/thumbnail"
-  fileNode.add_child(fLocatNode)
-end
-
-structMapNodeSet = mets.xpath("//mets:structMap", "mets" => METS_NAMESPACE)
-structMapNode = structMapNodeSet.first
-# create a div node with attribute TYPE="item"
-div0Node = Nokogiri::XML::Node.new("div", mets)
-div0Node['TYPE'] = "item"
-structMapNode.add_child(div0Node)
-# get all the GROUPID attributes in order by SEQ attribute in first file node with that GROUPID
-# for each GROUPID, get all the matching file nodes
-group_identifiers = identifiers.values
-group_identifiers.sort!
-group_identifiers.each do |identifier|
-  group_fileNodeSet = mets.xpath("//mets:file[@GROUPID='#{identifier}']", "mets" => METS_NAMESPACE)
-  divFileNode = Nokogiri::XML::Node.new("div", mets)
-  divFileNode['TYPE'] = "file"
-  # divFileNode['ORDER'] = 0
-  divFileNode['ID'] = identifier
-  div0Node.add_child(divFileNode)
-  group_fileNodeSet.each do |group_fileNode|
-    divFptrNode = Nokogiri::XML::Node.new("fptr", mets)
-    divFptrNode['FILEID'] = group_fileNode[@ID]
-    divFileNode.add_child(divFptrNode)
+# structMap
+structMapNode = mets.xpath("//mets:structMap", "mets" => METS_NAMESPACE).first
+itemDivNode = Nokogiri::XML::Node.new("div", mets)
+itemDivNode['TYPE'] = 'item'
+structMapNode.add_child(itemDivNode)
+order = 0
+structure.keys.sort.each do |struct_key|
+  order += 1
+  fileDivNode = Nokogiri::XML::Node.new("div", mets)
+  fileDivNode['ID'] = struct_key
+  fileDivNode['TYPE'] = 'file'
+  fileDivNode['ORDER'] = order
+  itemDivNode.add_child(fileDivNode)
+  structure[struct_key].each do |file|
+    fptrDivNode = Nokogiri::XML::Node.new("fptr", mets)
+    fptrDivNode['FILEID'] = file[:fileid]
+    fileDivNode.add_child(fptrDivNode)
   end
 end
-# for each GROUPID, create a div with TYPE="file", ORDER=SEQ, and ID=GROUPID
-# within each file div, add a fptr node for each file node, with FILEID set to the file ID
 
 puts mets.to_xml
