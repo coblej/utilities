@@ -1,7 +1,7 @@
 require 'resque'
 
 puts "================================="
-puts "Generating ptif's"
+puts "Re-Generating ptif's"
 puts "================================="
 colls = Collection.all
 colls.each do |coll|
