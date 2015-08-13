@@ -1,13 +1,17 @@
-rows = ENV["ROWS"] || 100
+rows = ENV["ROWS"] || 1
 
 def migrate_identifier(pid)
   puts "Migrating DPC identifier for #{pid}"
   obj = ActiveFedora::Base.find(pid)
   identifiers = obj.desc_metadata_values(:identifier)
-  obj.local_id = identifiers.shift
-  obj.set_desc_metadata_values(:identifier, identifiers)
-  obj.datastreams['descMetadata'].delete if obj.descMetadata.content == ''
-  # obj.save!
+  if obj.local_id.present?
+    puts "WARNING: #{pid} already has local id #{obj.local_id} -- will not migrate #{identifiers.shift} to local id"
+  else
+    obj.local_id = identifiers.shift
+    obj.set_desc_metadata_values(:identifier, identifiers)
+    obj.datastreams['descMetadata'].delete if obj.descMetadata.content == ''
+    obj.save!
+  end
 end
 
 def get_governed(coll_pid)
