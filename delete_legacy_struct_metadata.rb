@@ -1,5 +1,6 @@
-q = "#{Ddr::IndexFields::ORDER}:[* TO *]"
+q = "struct_metadata__order_ssi:[* TO *]"
 results = ActiveFedora::SolrService.query(q, rows: 999999)
+puts "Found #{results.count} objects with legacy structural metadata."
 results.each do |result|
   obj = ActiveFedora::Base.find(result['id'])
   if obj.structMetadata.content.present?
