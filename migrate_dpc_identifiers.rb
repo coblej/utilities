@@ -1,16 +1,16 @@
-rows = ENV["ROWS"] || 1
+admin_set = ENV['ADMIN_SET']
+limit = ENV['LIMIT'] || 10
 
 def migrate_identifier(pid)
-  puts "Migrating DPC identifier for #{pid}"
   obj = ActiveFedora::Base.find(pid)
   identifiers = obj.desc_metadata_values(:identifier)
-  if obj.local_id.present?
-    puts "WARNING: #{pid} already has local id #{obj.local_id} -- will not migrate #{identifiers.shift} to local id"
-  else
+  unless identifiers.empty?
     obj.local_id = identifiers.shift
     obj.set_desc_metadata_values(:identifier, identifiers)
     obj.datastreams['descMetadata'].delete if obj.descMetadata.content == ''
     obj.save!
+    puts "Migrated DPC identifier -- #{obj.local_id} -- for #{pid}"
+    @migrated += 1
   end
 end
 
@@ -20,15 +20,29 @@ def get_governed(coll_pid)
   response = ActiveFedora::SolrService.query(q, rows: 999999, fl:['id'])
 end
 
-q = 'active_fedora_model_ssi:Collection AND admin_set_ssi:dc'
+@migrated = 0
 
-dpc_colls_response = ActiveFedora::SolrService.query(q, row: rows.to_i, fl: ['id'])
+if admin_set.present?
+  admin_set_q = "active_fedora_model_ssi:Collection AND admin_set_ssi:#{admin_set}"
+  admin_set_response = ActiveFedora::SolrService.query(admin_set_q, rows: 999999, fl: [ 'id' ])
+  admin_set_colls = admin_set_response.map { |r| r['id'] }
+end
 
-puts "#{dpc_colls_response.size} DPC collection objects found."
+q = "-local_id_ssi:*"
+response = ActiveFedora::SolrService.query(q, rows: 999999, fl: [ 'id', 'is_governed_by_ssim' ])
+puts "Examining #{response.size} objects for DPC identifier migration"
+puts "Will migrate DPC identifiers for up to #{limit} objects"
 
-dpc_colls_response.each do |r|
-  governed = get_governed(r['id'])
-  governed.each do |g|
-    migrate_identifier(g['id'])
+response.each do |resp|
+  if admin_set.present?
+    if resp['is_governed_by_ssim'].present?
+      coll_pid = resp['is_governed_by_ssim'].first.gsub('info:fedora/', '')
+      if admin_set_colls.include?(coll_pid)
+        migrate_identifier(resp['id'])
+      end
+    end
+  else
+    migrate_identifier(resp['id'])
   end
+  break if @migrated == limit.to_i
 end
