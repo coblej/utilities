@@ -46,3 +46,5 @@ response.each do |resp|
   end
   break if @migrated == limit.to_i
 end
+
+puts "Migrated DPC identifiers for #{@migrated} objects"
