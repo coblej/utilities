@@ -1,19 +1,6 @@
 admin_set = ENV['ADMIN_SET']
 limit = ENV['LIMIT'] || 10
 
-def migrate_identifier(pid)
-  obj = ActiveFedora::Base.find(pid)
-  identifiers = obj.desc_metadata_values(:identifier)
-  unless identifiers.empty?
-    obj.local_id = identifiers.shift
-    obj.set_desc_metadata_values(:identifier, identifiers)
-    obj.datastreams['descMetadata'].delete if obj.descMetadata.content == ''
-    obj.save!
-    puts "Migrated DPC identifier -- #{obj.local_id} -- for #{pid}"
-    @migrated += 1
-  end
-end
-
 def get_governed(coll_pid)
   internal_uri_for_query = "info:fedora/#{coll_pid}".gsub(':', '\:')
   q = "is_governed_by_ssim:#{internal_uri_for_query}"
@@ -38,13 +25,17 @@ response.each do |resp|
     if resp['is_governed_by_ssim'].present?
       coll_pid = resp['is_governed_by_ssim'].first.gsub('info:fedora/', '')
       if admin_set_colls.include?(coll_pid)
-        migrate_identifier(resp['id'])
+        puts "Queueing DPC identifier migration for #{resp['id']}"
+        Resque.enqueue(DulHydra::Jobs::MoveFirstIdentifierToLocalId, resp['id'])
+        @migrated += 1
       end
     end
   else
-    migrate_identifier(resp['id'])
+    puts "Queueing DPC identifier migration for #{resp['id']}"
+    Resque.enqueue(DulHydra::Jobs::MoveFirstIdentifierToLocalId, resp['id'])
+    @migrated += 1
   end
   break if @migrated == limit.to_i
 end
 
-puts "Migrated DPC identifiers for #{@migrated} objects"
+puts "Queued DPC identifier migration for #{@migrated} objects"
